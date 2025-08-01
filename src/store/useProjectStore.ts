@@ -1,12 +1,14 @@
 import { create } from 'zustand';
 import { Project, Clip } from '../types/timeline';
 
-interface ProjectState {
+export interface ProjectState {
   project: Project;
   selectedClipId?: string;
   playing: boolean;
   addClip: (trackId: string, blobId: string, duration: number) => void;
   moveClip: (clipId: string, start: number) => void;
+  /** update an existing clip with a partial set of fields */
+  updateClip: (id: string, partial: Partial<Clip>) => void;
   setPlaying: (playing: boolean) => void;
 }
 
@@ -30,6 +32,7 @@ const useProjectStore = create<ProjectState>((set, get) => ({
         trackId,
         blobId,
         start,
+        offset: 0,
         duration,
       };
       return {
@@ -45,7 +48,20 @@ const useProjectStore = create<ProjectState>((set, get) => ({
         ),
       },
     })),
+  updateClip: (id, partial) =>
+    set(state => ({
+      project: {
+        ...state.project,
+        clips: state.project.clips.map(c =>
+          c.id === id ? { ...c, ...partial } : c
+        ),
+      },
+    })),
   setPlaying: playing => set({ playing }),
 }));
 
 export default useProjectStore;
+
+// selector that returns clips ordered by their start time
+export const orderedClips = (state: ProjectState) =>
+  [...state.project.clips].sort((a, b) => a.start - b.start);

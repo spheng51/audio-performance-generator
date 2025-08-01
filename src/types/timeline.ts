@@ -11,6 +11,8 @@ export interface Clip {
   trackId: string;
   blobId: string;
   start: number;
+  /** seconds into the source audio where playback should begin */
+  offset: number;
   duration: number;
 }
 
