@@ -1,51 +1,153 @@
-import useProjectStore from '../store/useProjectStore';
+import { useRef } from 'react';
+import useProjectStore, { orderedClips } from '../store/useProjectStore';
 import { getBlob } from '../hooks/useIndexedAudio';
+import { AudioEngine } from '../engine/AudioEngine';
 
 const PIXELS_PER_SEC = 100;
 
+const colors = {
+  voice: '#3b82f6', // blue-500
+  sfx: '#f59e0b',   // amber-500
+  music: '#10b981', // emerald-500
+};
+
 export default function Timeline() {
   const project = useProjectStore(s => s.project);
+  const clips = useProjectStore(orderedClips);
+  const updateClip = useProjectStore(s => s.updateClip);
   const playing = useProjectStore(s => s.playing);
   const setPlaying = useProjectStore(s => s.setPlaying);
+
+  const engineRef = useRef<AudioEngine>();
+  if (!engineRef.current) engineRef.current = new AudioEngine(getBlob);
 
   const play = async () => {
     if (playing) return;
     setPlaying(true);
-    const ctx = new AudioContext();
-    const sorted = [...project.clips].sort((a, b) => a.start - b.start);
-    for (const clip of sorted) {
-      const blob = await getBlob(clip.blobId);
-      if (!blob) continue;
-      const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
-      src.connect(ctx.destination);
-      src.start(ctx.currentTime + clip.start);
-    }
-    const last = sorted.reduce((m, c) => Math.max(m, c.start + c.duration), 0);
+    await engineRef.current!.play(clips);
+    const last = clips.reduce((m, c) => Math.max(m, c.start + c.duration), 0);
     setTimeout(() => setPlaying(false), last * 1000);
+  };
+
+  const handleMove = (
+    e: React.PointerEvent<HTMLDivElement>,
+    clipId: string,
+    startPx: number
+  ) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const target = e.currentTarget as HTMLElement;
+    let newLeft = startPx;
+    let raf = 0 as number | null;
+    const move = (ev: PointerEvent) => {
+      const delta = ev.clientX - startX;
+      newLeft = Math.max(0, startPx + delta);
+      if (!raf)
+        raf = requestAnimationFrame(() => {
+          target.style.left = `${newLeft}px`;
+          raf = 0;
+        });
+    };
+    const up = () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      updateClip(clipId, { start: newLeft / PIXELS_PER_SEC });
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+  };
+
+  const handleTrim = (
+    e: React.PointerEvent<HTMLDivElement>,
+    clipId: string,
+    side: 'left' | 'right',
+    origWidth: number,
+    origOffset: number
+  ) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const startX = e.clientX;
+    let newWidth = origWidth;
+    let newOffset = origOffset;
+    const move = (ev: PointerEvent) => {
+      const deltaPx = ev.clientX - startX;
+      if (side === 'left') {
+        const deltaSec = Math.max(0, deltaPx / PIXELS_PER_SEC);
+        newWidth = Math.max(0.1, origWidth - deltaSec);
+        newOffset = origOffset + (origWidth - newWidth);
+      } else {
+        const deltaSec = Math.min(0, deltaPx / PIXELS_PER_SEC);
+        newWidth = Math.max(0.1, origWidth + deltaSec);
+      }
+      const el = (e.target as HTMLElement).parentElement as HTMLElement;
+      el.style.width = `${newWidth * PIXELS_PER_SEC}px`;
+    };
+    const up = () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      const patch = side === 'left'
+        ? { offset: newOffset, duration: newWidth }
+        : { duration: newWidth };
+      updateClip(clipId, patch);
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
   };
 
   return (
     <div>
       <button onClick={play} disabled={playing}>Play</button>
-      <div style={{ position: 'relative', height: project.tracks.length * 60 }}>
-        {project.clips.map(clip => {
-          const trackIndex = project.tracks.findIndex(t => t.id === clip.trackId);
-          return (
-            <div
-              key={clip.id}
-              style={{
-                position: 'absolute',
-                top: trackIndex * 60 + 10,
-                left: clip.start * PIXELS_PER_SEC,
-                width: clip.duration * PIXELS_PER_SEC,
-                height: 40,
-                background: '#9af',
-              }}
-            />
-          );
-        })}
+      <div style={{ position: 'relative' }}>
+        {project.tracks.map((track, idx) => (
+          <div key={track.id} style={{ position: 'relative', height: 64 }}>
+            {project.clips.filter(c => c.trackId === track.id).map(c => {
+              const left = c.start * PIXELS_PER_SEC;
+              const width = c.duration * PIXELS_PER_SEC;
+              return (
+                <div
+                  key={c.id}
+                  className="clip"
+                  style={{
+                    position: 'absolute',
+                    left,
+                    width,
+                    top: 8,
+                    height: 48,
+                    background: colors[(track as any).type],
+                  }}
+                  onPointerDown={e => handleMove(e, c.id, left)}
+                >
+                  <div
+                    className="left-handle"
+                    style={{
+                      position: 'absolute',
+                      left: 0,
+                      top: 0,
+                      width: 6,
+                      height: '100%',
+                      cursor: 'ew-resize',
+                      background: '#fff',
+                    }}
+                    onPointerDown={e => handleTrim(e, c.id, 'left', c.duration, c.offset)}
+                  />
+                  <div
+                    className="right-handle"
+                    style={{
+                      position: 'absolute',
+                      right: 0,
+                      top: 0,
+                      width: 6,
+                      height: '100%',
+                      cursor: 'ew-resize',
+                      background: '#fff',
+                    }}
+                    onPointerDown={e => handleTrim(e, c.id, 'right', c.duration, c.offset)}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        ))}
       </div>
     </div>
   );
